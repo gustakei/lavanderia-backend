@@ -20,6 +20,10 @@ import base64
 from urllib.parse import urlparse, parse_qs
 from apscheduler.schedulers.background import BackgroundScheduler
 import atexit
+os.environ["PLAYWRIGHT_BROWSERS_PATH"] = "/data/browsers"
+
+# Garante que a pasta existe
+os.makedirs("/data/browsers", exist_ok=True)
 
 app = Flask(__name__)
 CORS(app)
