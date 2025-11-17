@@ -1,4 +1,4 @@
-# app.py — VERSÃO FINAL 100% FUNCIONAL NO RENDER FREE
+# app.py — VERSÃO FINAL OTIMIZADA (EXTRAÇÃO 1X, GLOBAL CORRIGIDO, DISCO PERSISTENTE)
 from flask import Flask, request, jsonify, Response, stream_with_context
 from flask_cors import CORS
 import os
@@ -22,7 +22,6 @@ from email import encoders
 from bs4 import BeautifulSoup
 import time
 import json
-import traceback
 from urllib.parse import urlparse, parse_qs
 from apscheduler.schedulers.background import BackgroundScheduler
 import atexit
@@ -37,7 +36,7 @@ EMAIL_SEU = os.getenv('EMAIL_SEU')
 EMAIL_SENHA = os.getenv('EMAIL_SENHA')
 CHROMEDRIVER_PATH = os.getenv('CHROMEDRIVER_PATH', '/usr/local/bin/chromedriver')
 
-# Caminho persistente (com disco /data ou fallback)
+# Disco persistente (com /data ou fallback)
 DATA_DIR = os.getenv('DISK_MOUNT_PATH', '.')
 os.makedirs(DATA_DIR, exist_ok=True)
 CAMINHO_RELATORIO = os.path.join(DATA_DIR, 'RelatorioLavanderiaSemanal.xlsx')
@@ -101,7 +100,7 @@ def fazer_login(driver):
     botao.click()
     time.sleep(5)
 
-# === EXTRAÇÃO ===
+# === EXTRAÇÃO (ÚNICA) ===
 def extrair_dados_semana_anterior(driver, hospital):
     inicio, fim = calcular_semana_anterior()
     periodo_text = f"{inicio.strftime('%d/%m/%Y')} a {fim.strftime('%d/%m/%Y')}"
@@ -141,7 +140,7 @@ def extrair_dados_semana_anterior(driver, hospital):
             total_kg += kg
     return total_kg, todos_dados, periodo_text
 
-# === RELATÓRIO (CORRIGIDO GLOBAL) ===
+# === RELATÓRIO (GLOBAL CORRIGIDO) ===
 def gerar_relatorio(resultados):
     global CAMINHO_RELATORIO
     df = pd.DataFrame([{'Hospital': r['hospital'], 'Período': r['periodo'], 'Total (Kg)': r['total']} for r in resultados])
@@ -260,6 +259,7 @@ def remove_hospital(index):
         save_data()
     return jsonify({'status': 'ok'})
 
+# === RUN-STREAM (EXTRAÇÃO 1X) ===
 @app.route('/api/run-stream', methods=['GET'])
 def run_stream():
     def event_msg(obj): return f"data: {json.dumps(obj, default=str)}\n\n"
@@ -270,26 +270,29 @@ def run_stream():
         if total == 0:
             yield event_msg({'type': 'error', 'error': 'Nenhum hospital'})
             return
+        
         driver = make_driver()
         try:
             fazer_login(driver)
+            resultados = []
+            
             for idx, h in enumerate(hospitals, start=1):
                 yield event_msg({'type': 'progress', 'idx': idx, 'current': idx-1, 'hospital': h['name'], 'status': 'Extraindo...'})
                 total_kg, dados, periodo = extrair_dados_semana_anterior(driver, h)
+                resultados.append({'hospital': h['name'], 'periodo': periodo, 'total': total_kg, 'dados': dados})
                 yield event_msg({'type': 'progress', 'idx': idx, 'current': idx, 'hospital': h['name'], 'status': f'{total_kg:.2f} kg'})
                 time.sleep(1)
-            resultados = []
-            for h in hospitals:
-                total_kg, dados, periodo = extrair_dados_semana_anterior(driver, h)
-                resultados.append({'hospital': h['name'], 'periodo': periodo, 'total': total_kg, 'dados': dados})
+            
             gerar_relatorio(resultados)
             enviar_email(config.get('email', ''))
             yield event_msg({'type': 'done', 'results': resultados})
+            
         except Exception as e:
             yield event_msg({'type': 'error', 'error': str(e)})
         finally:
             try: driver.quit()
             except: pass
+            
     return Response(gen(), mimetype='text/event-stream')
 
 # === INICIALIZAÇÃO ===
