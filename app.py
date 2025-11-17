@@ -37,10 +37,22 @@ USUARIO_DEFAULT = 'Guilherme Duarte'
 SENHA_DEFAULT = '13072006'
 
 # Persistência no disco do Render
+# Persistência no disco do Render
 config_file = '/data/config.json'
 hospitals_file = '/data/hospitals.json'
+
+# Se os arquivos não existirem, cria com conteúdo padrão
+if not os.path.exists(config_file):
+    with open(config_file, 'w', encoding='utf-8') as f:
+        json.dump({}, f)
+
+if not os.path.exists(hospitals_file):
+    with open(hospitals_file, 'w', encoding='utf-8') as f:
+        json.dump([], f)
+
 config = {}
 hospitals = []
+
 
 # ========================= CARREGAR DADOS =========================
 def load_data():
