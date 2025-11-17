@@ -1,10 +1,11 @@
-# app.py — VERSÃO FINAL DEFINITIVA (Playwright + Cron Recorrente + Download Excel)
+# app.py — VERSÃO REFORMULADA (Playwright + Cron Recorrente + Download Excel)
+# Revisado para robustez de paths, tratamento de erros e inicialização segura.
+
 from flask import Flask, request, jsonify, Response, stream_with_context
 from flask_cors import CORS
 import os
 import tempfile
 from dotenv import load_dotenv
-from playwright.sync_api import sync_playwright
 import pandas as pd
 from datetime import datetime, timedelta
 import openpyxl
@@ -27,7 +28,7 @@ import traceback
 # Prefer /data (montado no Render). Se não for possível, faz fallback para tempdir.
 DEFAULT_DATA_DIR = os.environ.get("DATA_DIR", "/data")
 
-# Variáveis globais de caminho (serão atualizadas na init)
+# Variáveis globais de caminho (serão inicializadas na init_storage)
 DATA_DIR = None
 BROWSERS_DIR = None
 CONFIG_FILE = None
@@ -36,45 +37,51 @@ CAMINHO_RELATORIO = None
 
 # ========================= Inicialização segura de storage =========================
 def init_storage():
+    """
+    Inicializa DATA_DIR e BROWSERS_DIR com preferência por /data.
+    Se /data não estiver disponível/criável, usa diretório temporário.
+    Define PLAYWRIGHT_BROWSERS_PATH antes de importar/usar Playwright.
+    Cria arquivos config.json e hospitals.json se não existirem.
+    """
     global DATA_DIR, BROWSERS_DIR, CONFIG_FILE, HOSPITALS_FILE, CAMINHO_RELATORIO
 
-    # tenta usar /data, senão usa tempdir
+    # 1) Tenta usar DEFAULT_DATA_DIR (/data)
     try:
-        # preferir o DEFAULT_DATA_DIR (normalmente /data no Render)
         os.makedirs(DEFAULT_DATA_DIR, exist_ok=True)
-        # testar permissão escrita
+        # testa permissão de escrita
         testfile = os.path.join(DEFAULT_DATA_DIR, ".touch_test")
-        with open(testfile, "w") as f:
+        with open(testfile, "w", encoding="utf-8") as f:
             f.write("ok")
         os.remove(testfile)
         DATA_DIR = DEFAULT_DATA_DIR
         print(f"[INIT] Usando DATA_DIR = {DATA_DIR}")
     except Exception as e:
-        # fallback
+        # fallback para tempdir (persistência temporária)
         tmp = tempfile.mkdtemp(prefix="lavanderia_data_")
         DATA_DIR = tmp
         print(f"[INIT] Não foi possível usar {DEFAULT_DATA_DIR} ({e}). Fazendo fallback para {DATA_DIR}")
 
-    # browsers (para Playwright)
-    BROWSERS_DIR = os.path.join(DATA_DIR, "browsers")
+    # 2) Browsers dir (preferir DATA_DIR/browsers)
     try:
-        os.makedirs(BROWSERS_DIR, exist_ok=True)
+        browsers_candidate = os.path.join(DATA_DIR, "browsers")
+        os.makedirs(browsers_candidate, exist_ok=True)
+        BROWSERS_DIR = browsers_candidate
     except Exception as e:
-        # fallback para temp, caso permissão falhe
-        tmp = tempfile.mkdtemp(prefix="lavanderia_browsers_")
-        BROWSERS_DIR = tmp
-        print(f"[INIT] Falha criando browsers dir em {BROWSERS_DIR}: {e}. Usando {tmp}")
+        # fallback para temp
+        tmpb = tempfile.mkdtemp(prefix="lavanderia_browsers_")
+        BROWSERS_DIR = tmpb
+        print(f"[INIT] Falha criando browsers dir em {browsers_candidate}: {e}. Usando {BROWSERS_DIR}")
 
-    # ajusta variável de ambiente para Playwright (importante)
+    # 3) Ajusta variável de ambiente para Playwright (tem que estar definida antes de usar/instalar browsers)
     os.environ["PLAYWRIGHT_BROWSERS_PATH"] = BROWSERS_DIR
     print(f"[INIT] PLAYWRIGHT_BROWSERS_PATH = {BROWSERS_DIR}")
 
-    # arquivos de config
+    # 4) Arquivos de config
     CONFIG_FILE = os.path.join(DATA_DIR, "config.json")
     HOSPITALS_FILE = os.path.join(DATA_DIR, "hospitals.json")
     CAMINHO_RELATORIO = os.path.join(DATA_DIR, "RelatorioLavanderiaSemanal.xlsx")
 
-    # cria arquivos vazios se não existirem (em try/except)
+    # 5) Cria arquivos padrão se não existirem, com tratamento de erro
     try:
         if not os.path.exists(CONFIG_FILE):
             with open(CONFIG_FILE, "w", encoding="utf-8") as f:
@@ -82,6 +89,7 @@ def init_storage():
             print(f"[INIT] Criado arquivo default: {CONFIG_FILE}")
     except Exception as e:
         print(f"[INIT] Erro criando {CONFIG_FILE}: {e}")
+
     try:
         if not os.path.exists(HOSPITALS_FILE):
             with open(HOSPITALS_FILE, "w", encoding="utf-8") as f:
@@ -93,6 +101,16 @@ def init_storage():
 # roda inicialização de storage já no import (robusto)
 init_storage()
 
+# ========================= Agora podemos importar Playwright com PLAYWRIGHT_BROWSERS_PATH já definido ====
+# Import dinâmico do Playwright para evitar side-effects caso não esteja instalado ainda no ambiente.
+try:
+    from playwright.sync_api import sync_playwright
+    PLAYWRIGHT_AVAILABLE = True
+except Exception as e:
+    sync_playwright = None
+    PLAYWRIGHT_AVAILABLE = False
+    print(f"[BOOT] Playwright não disponível no ambiente: {e}")
+
 # ========================= App & env =========================
 app = Flask(__name__)
 CORS(app)
@@ -101,22 +119,25 @@ load_dotenv()  # carrega .env se houver
 # Carrega configurações do ambiente (podem depender do load_dotenv)
 EMAIL_SEU = os.getenv('EMAIL_SEU')
 EMAIL_SENHA = os.getenv('EMAIL_SENHA')
-USUARIO_DEFAULT = 'Guilherme Duarte'
-SENHA_DEFAULT = '13072006'
+USUARIO_DEFAULT = os.getenv('USUARIO_DEFAULT', 'Guilherme Duarte')
+SENHA_DEFAULT = os.getenv('SENHA_DEFAULT', '13072006')
 
-# Usa as paths definidas na init_storage (variáveis globais definidas lá)
-# Se algo não estiver definido por qualquer motivo, define defaults mínimos
-if 'DATA_DIR' not in globals() or DATA_DIR is None:
+# (Re)garante defaults das variáveis de path caso algo não tenha sido inicializado
+if DATA_DIR is None:
     DATA_DIR = tempfile.mkdtemp(prefix="lavanderia_data_fallback_")
-if 'BROWSERS_DIR' not in globals() or BROWSERS_DIR is None:
+if BROWSERS_DIR is None:
     BROWSERS_DIR = tempfile.mkdtemp(prefix="lavanderia_browsers_fallback_")
-if 'CAMINHO_RELATORIO' not in globals() or CAMINHO_RELATORIO is None:
+if CAMINHO_RELATORIO is None:
     CAMINHO_RELATORIO = os.path.join(DATA_DIR, "RelatorioLavanderiaSemanal.xlsx")
 
-CONFIG_FILE = globals().get('CONFIG_FILE', os.path.join(DATA_DIR, "config.json"))
-HOSPITALS_FILE = globals().get('HOSPITALS_FILE', os.path.join(DATA_DIR, "hospitals.json"))
+# Define CONFIG_FILE/HOSPITALS_FILE se não foram definidos (segurança)
+if CONFIG_FILE is None:
+    CONFIG_FILE = os.path.join(DATA_DIR, "config.json")
+if HOSPITALS_FILE is None:
+    HOSPITALS_FILE = os.path.join(DATA_DIR, "hospitals.json")
 
 print(f"[BOOT] CONFIG_FILE={CONFIG_FILE}, HOSPITALS_FILE={HOSPITALS_FILE}, RELATORIO={CAMINHO_RELATORIO}")
+print(f"[BOOT] DATA_DIR={DATA_DIR}, BROWSERS_DIR={BROWSERS_DIR}")
 
 # ========================= Estado em memória =========================
 config = {}
@@ -236,7 +257,7 @@ def extrair_dados_semana_anterior(page, hospital):
 def gerar_relatorio(resultados):
     global CAMINHO_RELATORIO
     try:
-        df = pd.DataFrame([{'Hospital': r['hospital'], 'Período': r['periodo'], 'Total (Kg)': r['total']} for r in resultados])
+        df = pd.DataFrame([{'Hospital': r.get('hospital', ''), 'Período': r.get('periodo', ''), 'Total (Kg)': r.get('total', 0)} for r in resultados])
     except Exception as e:
         print(f"[REPORT] Erro criando DataFrame: {e}")
         df = pd.DataFrame(columns=['Hospital', 'Período', 'Total (Kg)'])
@@ -258,9 +279,11 @@ def gerar_relatorio(resultados):
     try:
         wb = openpyxl.load_workbook(CAMINHO_RELATORIO)
         ws = wb.active
-        for cell in ws[1]:
-            cell.font = Font(bold=True)
-            cell.fill = PatternFill(start_color='CCCCCC', end_color='CCCCCC', fill_type='solid')
+        # protege se a sheet estiver vazia
+        if ws.max_row >= 1:
+            for cell in ws[1]:
+                cell.font = Font(bold=True)
+                cell.fill = PatternFill(start_color='CCCCCC', end_color='CCCCCC', fill_type='solid')
         total = sum(r.get('total', 0) for r in resultados)
         ws.append(['Total Geral', '', total])
         ws[f'C{ws.max_row}'].font = Font(bold=True)
@@ -314,8 +337,13 @@ def executar_relatorio_agendado():
     except Exception as e:
         print(f"[AGENDADO] Falha criando BROWSERS_DIR: {e}")
 
+    if not PLAYWRIGHT_AVAILABLE:
+        print("[AGENDADO] Playwright não disponível; verifique instalação e build (playwright install).")
+        return
+
     try:
         with sync_playwright() as p:
+            # Lança o navegador — se os executáveis não existirem, Playwright emitirá mensagem sugerindo 'playwright install'
             browser = p.chromium.launch(headless=True)
             page = browser.new_page()
             try:
@@ -337,7 +365,7 @@ def executar_relatorio_agendado():
             finally:
                 try:
                     browser.close()
-                except:
+                except Exception:
                     pass
     except Exception as e:
         print(f"[AGENDADO] Falha inicializando Playwright: {e}\n{traceback.format_exc()}")
@@ -425,6 +453,10 @@ def run_stream():
         except Exception as e:
             print(f"[STREAM] Falha criando BROWSERS_DIR: {e}")
 
+        if not PLAYWRIGHT_AVAILABLE:
+            yield event_msg({'type': 'error', 'error': 'Playwright não instalado no ambiente. Execute playwright install no build.'})
+            return
+
         try:
             with sync_playwright() as p:
                 browser = p.chromium.launch(headless=True)
@@ -495,3 +527,28 @@ if __name__ == '__main__':
 
     port = int(os.getenv('PORT', 5000))
     app.run(host='0.0.0.0', port=port)
+
+# ========================= DICAS IMPORTANTES (copiar para Render) =========================
+#
+# No render.yaml (ou no painel), garanta:
+#
+# 1) Disk montado em /data:
+# disk:
+#   name: data
+#   mountPath: /data
+#
+# 2) buildCommand que instala browsers no /data/browsers:
+#   pip install -r requirements.txt
+#   mkdir -p /data/browsers
+#   PLAYWRIGHT_BROWSERS_PATH=/data/browsers playwright install chromium --with-deps
+#
+# 3) env var (opcional, mas útil) no painel:
+#   PLAYWRIGHT_BROWSERS_PATH = /data/browsers
+#
+# 4) startCommand:
+#   gunicorn app:app --worker-class sync --workers 1
+#
+# Essas três peças (disk mount + playwright install apontando para /data/browsers + startCommand) são
+# necessárias para garantir que Playwright encontre os binários do Chromium de forma persistente.
+#
+# FIM.
