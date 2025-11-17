@@ -4,11 +4,13 @@ services:
     env: python
     region: oregon
     plan: free
+
     buildCommand: |
       pip install -r requirements.txt
-      playwright install-deps
-      playwright install chromium
+      playwright install --with-deps
+
     startCommand: gunicorn app:app --worker-class sync --workers 1
+
     disk:
       name: data
       mountPath: /data
