@@ -1,4 +1,4 @@
-# app.py — VERSÃO FINAL OTIMIZADA (EXTRAÇÃO 1X, GLOBAL CORRIGIDO, DISCO PERSISTENTE)
+# app.py — VERSÃO FINAL CORRIGIDA (GLOBAL NO TOPO, EXTRAÇÃO 1X, DISCO PERSISTENTE)
 from flask import Flask, request, jsonify, Response, stream_with_context
 from flask_cors import CORS
 import os
@@ -22,6 +22,7 @@ from email import encoders
 from bs4 import BeautifulSoup
 import time
 import json
+import traceback
 from urllib.parse import urlparse, parse_qs
 from apscheduler.schedulers.background import BackgroundScheduler
 import atexit
@@ -142,7 +143,7 @@ def extrair_dados_semana_anterior(driver, hospital):
 
 # === RELATÓRIO (GLOBAL CORRIGIDO) ===
 def gerar_relatorio(resultados):
-    global CAMINHO_RELATORIO
+    global CAMINHO_RELATORIO  # ← GLOBAL NO TOPO DA FUNÇÃO
     df = pd.DataFrame([{'Hospital': r['hospital'], 'Período': r['periodo'], 'Total (Kg)': r['total']} for r in resultados])
     try:
         df.to_excel(CAMINHO_RELATORIO, index=False)
