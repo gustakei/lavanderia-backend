@@ -4,20 +4,12 @@ services:
     env: python
     region: oregon
     plan: free
-    allowRoot: true
-
     buildCommand: |
       pip install -r requirements.txt
-      mkdir -p /data/browsers
-      PLAYWRIGHT_BROWSERS_PATH=/data/browsers playwright install chromium --with-deps
-
-    envVars:
-      - key: PLAYWRIGHT_BROWSERS_PATH
-        value: /data/browsers
-
+      playwright install-deps
+      playwright install
+    startCommand: gunicorn app:app --worker-class sync --workers 1
     disk:
       name: data
       mountPath: /data
       sizeGB: 1
-
-    startCommand: gunicorn app:app --worker-class sync --workers 1
