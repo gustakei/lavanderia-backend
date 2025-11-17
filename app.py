@@ -52,11 +52,11 @@ def load_data():
 load_data()
 
 def save_data():
-    os.makedirs('/data', exist_ok=True)
     with open(config_file, 'w', encoding='utf-8') as f:
         json.dump(config, f, indent=2, ensure_ascii=False)
     with open(hospitals_file, 'w', encoding='utf-8') as f:
         json.dump(hospitals, f, indent=2, ensure_ascii=False)
+
 
 # ========================= CÁLCULO SEMANA ANTERIOR =========================
 def calcular_semana_anterior():
