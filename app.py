@@ -1,11 +1,9 @@
-# app.py — VERSÃO REFORMULADA (Playwright + Cron Recorrente + Download Excel)
-# Revisado para robustez de paths, tratamento de erros e inicialização segura.
-
+# app.py — VERSÃO FINAL DEFINITIVA (Playwright + Cron Recorrente + Download Excel)
 from flask import Flask, request, jsonify, Response, stream_with_context
 from flask_cors import CORS
 import os
-import tempfile
 from dotenv import load_dotenv
+from playwright.sync_api import sync_playwright
 import pandas as pd
 from datetime import datetime, timedelta
 import openpyxl
@@ -22,174 +20,45 @@ import base64
 from urllib.parse import urlparse, parse_qs
 from apscheduler.schedulers.background import BackgroundScheduler
 import atexit
-import traceback
 
-# ========================= Configuráveis / Paths =========================
-# Prefer /data (montado no Render). Se não for possível, faz fallback para tempdir.
-DEFAULT_DATA_DIR = os.environ.get("DATA_DIR", "/data")
-
-# Variáveis globais de caminho (serão inicializadas na init_storage)
-DATA_DIR = None
-BROWSERS_DIR = None
-CONFIG_FILE = None
-HOSPITALS_FILE = None
-CAMINHO_RELATORIO = None
-
-# ========================= Inicialização segura de storage =========================
-def init_storage():
-    """
-    Inicializa DATA_DIR e BROWSERS_DIR com preferência por /data.
-    Se /data não estiver disponível/criável, usa diretório temporário.
-    Define PLAYWRIGHT_BROWSERS_PATH antes de importar/usar Playwright.
-    Cria arquivos config.json e hospitals.json se não existirem.
-    """
-    global DATA_DIR, BROWSERS_DIR, CONFIG_FILE, HOSPITALS_FILE, CAMINHO_RELATORIO
-
-    # 1) Tenta usar DEFAULT_DATA_DIR (/data)
-    try:
-        os.makedirs(DEFAULT_DATA_DIR, exist_ok=True)
-        # testa permissão de escrita
-        testfile = os.path.join(DEFAULT_DATA_DIR, ".touch_test")
-        with open(testfile, "w", encoding="utf-8") as f:
-            f.write("ok")
-        os.remove(testfile)
-        DATA_DIR = DEFAULT_DATA_DIR
-        print(f"[INIT] Usando DATA_DIR = {DATA_DIR}")
-    except Exception as e:
-        # fallback para tempdir (persistência temporária)
-        tmp = tempfile.mkdtemp(prefix="lavanderia_data_")
-        DATA_DIR = tmp
-        print(f"[INIT] Não foi possível usar {DEFAULT_DATA_DIR} ({e}). Fazendo fallback para {DATA_DIR}")
-
-    # 2) Browsers dir (preferir DATA_DIR/browsers)
-    try:
-        browsers_candidate = os.path.join(DATA_DIR, "browsers")
-        os.makedirs(browsers_candidate, exist_ok=True)
-        BROWSERS_DIR = browsers_candidate
-    except Exception as e:
-        # fallback para temp
-        tmpb = tempfile.mkdtemp(prefix="lavanderia_browsers_")
-        BROWSERS_DIR = tmpb
-        print(f"[INIT] Falha criando browsers dir em {browsers_candidate}: {e}. Usando {BROWSERS_DIR}")
-
-    # 3) Ajusta variável de ambiente para Playwright (tem que estar definida antes de usar/instalar browsers)
-    os.environ["PLAYWRIGHT_BROWSERS_PATH"] = BROWSERS_DIR
-    print(f"[INIT] PLAYWRIGHT_BROWSERS_PATH = {BROWSERS_DIR}")
-
-    # 4) Arquivos de config
-    CONFIG_FILE = os.path.join(DATA_DIR, "config.json")
-    HOSPITALS_FILE = os.path.join(DATA_DIR, "hospitals.json")
-    CAMINHO_RELATORIO = os.path.join(DATA_DIR, "RelatorioLavanderiaSemanal.xlsx")
-
-    # 5) Cria arquivos padrão se não existirem, com tratamento de erro
-    try:
-        if not os.path.exists(CONFIG_FILE):
-            with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-                json.dump({}, f)
-            print(f"[INIT] Criado arquivo default: {CONFIG_FILE}")
-    except Exception as e:
-        print(f"[INIT] Erro criando {CONFIG_FILE}: {e}")
-
-    try:
-        if not os.path.exists(HOSPITALS_FILE):
-            with open(HOSPITALS_FILE, "w", encoding="utf-8") as f:
-                json.dump([], f)
-            print(f"[INIT] Criado arquivo default: {HOSPITALS_FILE}")
-    except Exception as e:
-        print(f"[INIT] Erro criando {HOSPITALS_FILE}: {e}")
-
-# roda inicialização de storage já no import (robusto)
-init_storage()
-
-# ========================= Agora podemos importar Playwright com PLAYWRIGHT_BROWSERS_PATH já definido ====
-# Import dinâmico do Playwright para evitar side-effects caso não esteja instalado ainda no ambiente.
-try:
-    from playwright.sync_api import sync_playwright
-    PLAYWRIGHT_AVAILABLE = True
-except Exception as e:
-    sync_playwright = None
-    PLAYWRIGHT_AVAILABLE = False
-    print(f"[BOOT] Playwright não disponível no ambiente: {e}")
-
-# ========================= App & env =========================
 app = Flask(__name__)
 CORS(app)
-load_dotenv()  # carrega .env se houver
+load_dotenv()
 
-# Carrega configurações do ambiente (podem depender do load_dotenv)
+# ========================= CONFIGURAÇÕES =========================
 EMAIL_SEU = os.getenv('EMAIL_SEU')
 EMAIL_SENHA = os.getenv('EMAIL_SENHA')
-USUARIO_DEFAULT = os.getenv('USUARIO_DEFAULT', 'Guilherme Duarte')
-SENHA_DEFAULT = os.getenv('SENHA_DEFAULT', '13072006')
+CAMINHO_RELATORIO = '/data/RelatorioLavanderiaSemanal.xlsx'
+USUARIO_DEFAULT = 'Guilherme Duarte'
+SENHA_DEFAULT = '13072006'
 
-# (Re)garante defaults das variáveis de path caso algo não tenha sido inicializado
-if DATA_DIR is None:
-    DATA_DIR = tempfile.mkdtemp(prefix="lavanderia_data_fallback_")
-if BROWSERS_DIR is None:
-    BROWSERS_DIR = tempfile.mkdtemp(prefix="lavanderia_browsers_fallback_")
-if CAMINHO_RELATORIO is None:
-    CAMINHO_RELATORIO = os.path.join(DATA_DIR, "RelatorioLavanderiaSemanal.xlsx")
-
-# Define CONFIG_FILE/HOSPITALS_FILE se não foram definidos (segurança)
-if CONFIG_FILE is None:
-    CONFIG_FILE = os.path.join(DATA_DIR, "config.json")
-if HOSPITALS_FILE is None:
-    HOSPITALS_FILE = os.path.join(DATA_DIR, "hospitals.json")
-
-print(f"[BOOT] CONFIG_FILE={CONFIG_FILE}, HOSPITALS_FILE={HOSPITALS_FILE}, RELATORIO={CAMINHO_RELATORIO}")
-print(f"[BOOT] DATA_DIR={DATA_DIR}, BROWSERS_DIR={BROWSERS_DIR}")
-
-# ========================= Estado em memória =========================
+# Persistência no disco do Render
+config_file = '/data/config.json'
+hospitals_file = '/data/hospitals.json'
 config = {}
 hospitals = []
 
-# ========================= Funções de persistência =========================
+# ========================= CARREGAR DADOS =========================
 def load_data():
     global config, hospitals
-    try:
-        if os.path.exists(CONFIG_FILE):
-            with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
-                try:
-                    config = json.load(f)
-                except Exception:
-                    print(f"[LOAD] arquivo {CONFIG_FILE} inválido — resetando config")
-                    config = {}
-        else:
-            config = {}
-    except Exception as e:
-        print(f"[LOAD] Erro lendo {CONFIG_FILE}: {e}")
-        config = {}
-
-    try:
-        if os.path.exists(HOSPITALS_FILE):
-            with open(HOSPITALS_FILE, 'r', encoding='utf-8') as f:
-                try:
-                    hospitals = json.load(f)
-                except Exception:
-                    print(f"[LOAD] arquivo {HOSPITALS_FILE} inválido — resetando hospitals")
-                    hospitals = []
-        else:
-            hospitals = []
-    except Exception as e:
-        print(f"[LOAD] Erro lendo {HOSPITALS_FILE}: {e}")
-        hospitals = []
-
-def save_data():
-    try:
-        with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
-            json.dump(config, f, indent=2, ensure_ascii=False)
-    except Exception as e:
-        print(f"[SAVE] Falha ao salvar {CONFIG_FILE}: {e}")
-    try:
-        with open(HOSPITALS_FILE, 'w', encoding='utf-8') as f:
-            json.dump(hospitals, f, indent=2, ensure_ascii=False)
-    except Exception as e:
-        print(f"[SAVE] Falha ao salvar {HOSPITALS_FILE}: {e}")
-
-# carregar estado na inicialização do módulo (agora que paths estão garantidos/fallback)
+    if os.path.exists(config_file):
+        with open(config_file, 'r', encoding='utf-8') as f:
+            try: config = json.load(f)
+            except: config = {}
+    if os.path.exists(hospitals_file):
+        with open(hospitals_file, 'r', encoding='utf-8') as f:
+            try: hospitals = json.load(f)
+            except: hospitals = []
 load_data()
 
-# ========================= Utilidades de datas =========================
+def save_data():
+    os.makedirs('/data', exist_ok=True)
+    with open(config_file, 'w', encoding='utf-8') as f:
+        json.dump(config, f, indent=2, ensure_ascii=False)
+    with open(hospitals_file, 'w', encoding='utf-8') as f:
+        json.dump(hospitals, f, indent=2, ensure_ascii=False)
+
+# ========================= CÁLCULO SEMANA ANTERIOR =========================
 def calcular_semana_anterior():
     hoje = datetime.now()
     dias_desde_segunda = hoje.weekday()
@@ -202,9 +71,7 @@ def extrair_dados_semana_anterior(page, hospital):
     inicio, fim = calcular_semana_anterior()
     periodo_text = f"{inicio.strftime('%d/%m/%Y')} a {fim.strftime('%d/%m/%Y')}"
 
-    # cuidado se hospital não tiver 'url'
-    url = hospital.get('url', '') if isinstance(hospital, dict) else ''
-    parsed = urlparse(url)
+    parsed = urlparse(hospital['url'])
     params = parse_qs(parsed.query)
     cliente_id = params.get('cliente', [None])[0]
     if not cliente_id:
@@ -238,16 +105,12 @@ def extrair_dados_semana_anterior(page, hospital):
 
         for linha in tabela.find_all('tr')[1:]:
             cols = linha.find_all('td')
-            if len(cols) < 2:
-                continue
+            if len(cols) < 2: continue
             data_str = cols[0].get_text(strip=True)
-            if data_str not in dias:
-                continue
+            if data_str not in dias: continue
             kg_text = cols[1].get_text(strip=True).replace('.', '').replace(' ', '').replace(',', '.')
-            try:
-                kg = float(kg_text)
-            except:
-                kg = 0.0
+            try: kg = float(kg_text)
+            except: kg = 0.0
             todos_dados.append({'data': data_str, 'kg': kg})
             total_kg += kg
 
@@ -256,121 +119,79 @@ def extrair_dados_semana_anterior(page, hospital):
 # ========================= RELATÓRIO EXCEL =========================
 def gerar_relatorio(resultados):
     global CAMINHO_RELATORIO
-    try:
-        df = pd.DataFrame([{'Hospital': r.get('hospital', ''), 'Período': r.get('periodo', ''), 'Total (Kg)': r.get('total', 0)} for r in resultados])
-    except Exception as e:
-        print(f"[REPORT] Erro criando DataFrame: {e}")
-        df = pd.DataFrame(columns=['Hospital', 'Período', 'Total (Kg)'])
-
-    # tenta escrever no caminho definido (normalmente em /data)
+    df = pd.DataFrame([{'Hospital': r['hospital'], 'Período': r['periodo'], 'Total (Kg)': r['total']} for r in resultados])
     try:
         df.to_excel(CAMINHO_RELATORIO, index=False)
-    except Exception as e:
-        # fallback: arquivo em temp
-        fallback = os.path.join(tempfile.gettempdir(), f"Relatorio_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx")
-        try:
-            df.to_excel(fallback, index=False)
-            CAMINHO_RELATORIO = fallback
-            print(f"[REPORT] Falha salvando em {CAMINHO_RELATORIO} — salvo em fallback {fallback}")
-        except Exception as e2:
-            print(f"[REPORT] Falha dupla salvando Excel: {e} | {e2}")
-            return
+    except:
+        CAMINHO_RELATORIO = f"/data/Relatorio_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        df.to_excel(CAMINHO_RELATORIO, index=False)
 
-    try:
-        wb = openpyxl.load_workbook(CAMINHO_RELATORIO)
-        ws = wb.active
-        # protege se a sheet estiver vazia
-        if ws.max_row >= 1:
-            for cell in ws[1]:
-                cell.font = Font(bold=True)
-                cell.fill = PatternFill(start_color='CCCCCC', end_color='CCCCCC', fill_type='solid')
-        total = sum(r.get('total', 0) for r in resultados)
-        ws.append(['Total Geral', '', total])
-        ws[f'C{ws.max_row}'].font = Font(bold=True)
-        if len(resultados) > 1:
-            chart = BarChart()
-            data = Reference(ws, min_col=3, min_row=1, max_row=ws.max_row-1)
-            cats = Reference(ws, min_col=1, min_row=2, max_row=ws.max_row-1)
-            chart.add_data(data, titles_from_data=True)
-            chart.set_categories(cats)
-            chart.title = "Totais por Hospital"
-            ws.add_chart(chart, "E2")
-        wb.save(CAMINHO_RELATORIO)
-    except Exception as e:
-        print(f"[REPORT] Erro ao formatar/salvar workbook: {e}\n{traceback.format_exc()}")
+    wb = openpyxl.load_workbook(CAMINHO_RELATORIO)
+    ws = wb.active
+    for cell in ws[1]:
+        cell.font = Font(bold=True)
+        cell.fill = PatternFill(start_color='CCCCCC', end_color='CCCCCC', fill_type='solid')
+    total = sum(r['total'] for r in resultados)
+    ws.append(['Total Geral', '', total])
+    ws[f'C{ws.max_row}'].font = Font(bold=True)
+    if len(resultados) > 1:
+        chart = BarChart()
+        data = Reference(ws, min_col=3, min_row=1, max_row=ws.max_row-1)
+        cats = Reference(ws, min_col=1, min_row=2, max_row=ws.max_row-1)
+        chart.add_data(data, titles_from_data=True)
+        chart.set_categories(cats)
+        chart.title = "Totais por Hospital"
+        ws.add_chart(chart, "E2")
+    wb.save(CAMINHO_RELATORIO)
 
 # ========================= ENVIO DE EMAIL =========================
 def enviar_email(email_dest):
-    if not EMAIL_SEU or not EMAIL_SENHA or not email_dest:
-        print("[EMAIL] Credenciais ou destinatário ausentes, pulando envio.")
-        return
+    if not EMAIL_SEU or not EMAIL_SENHA or not email_dest: return
+    msg = MIMEMultipart()
+    msg['From'] = EMAIL_SEU
+    msg['To'] = email_dest
+    msg['Subject'] = f"Relatório Lavanderia {datetime.now().strftime('%d/%m/%Y')}"
+    msg.attach(MIMEText("Segue o relatório semanal em anexo.", 'plain'))
+    with open(CAMINHO_RELATORIO, "rb") as f:
+        part = MIMEBase('application', 'octet-stream')
+        part.set_payload(f.read())
+        encoders.encode_base64(part)
+        part.add_header('Content-Disposition', f'attachment; filename={os.path.basename(CAMINHO_RELATORIO)}')
+        msg.attach(part)
     try:
-        msg = MIMEMultipart()
-        msg['From'] = EMAIL_SEU
-        msg['To'] = email_dest
-        msg['Subject'] = f"Relatório Lavanderia {datetime.now().strftime('%d/%m/%Y')}"
-        msg.attach(MIMEText("Segue o relatório semanal em anexo.", 'plain'))
-        with open(CAMINHO_RELATORIO, "rb") as f:
-            part = MIMEBase('application', 'octet-stream')
-            part.set_payload(f.read())
-            encoders.encode_base64(part)
-            part.add_header('Content-Disposition', f'attachment; filename={os.path.basename(CAMINHO_RELATORIO)}')
-            msg.attach(part)
-        server = smtplib.SMTP('smtp.gmail.com', 587, timeout=30)
+        server = smtplib.SMTP('smtp.gmail.com', 587)
         server.starttls()
         server.login(EMAIL_SEU, EMAIL_SENHA)
         server.sendmail(EMAIL_SEU, email_dest, msg.as_string())
         server.quit()
-        print(f"[EMAIL] Relatório enviado para {email_dest}")
-    except Exception as e:
-        print(f"[EMAIL] Falha ao enviar email: {e}\n{traceback.format_exc()}")
+    except: pass
 
-# ========================= EXECUÇÃO AUTOMÁTICA (Playwright) =========================
+# ========================= EXECUÇÃO AUTOMÁTICA =========================
 def executar_relatorio_agendado():
-    if not hospitals or not config.get('email'):
-        print("[AGENDADO] Sem hospitais ou email configurado — pulando.")
-        return
+    if not hospitals or not config.get('email'): return
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page()
+        try:
+            page.goto('https://sistemasaogeraldoservice.com.br/sistema/Login.aspx')
+            page.fill('#txtUsuario', config.get('username', USUARIO_DEFAULT))
+            page.fill('#txtSenha', config.get('password', SENHA_DEFAULT))
+            page.click('#Button1')
+            page.wait_for_load_state('networkidle')
 
-    # garante browsers dir existe antes de usar playwright
-    try:
-        os.makedirs(BROWSERS_DIR, exist_ok=True)
-    except Exception as e:
-        print(f"[AGENDADO] Falha criando BROWSERS_DIR: {e}")
+            resultados = []
+            for h in hospitals:
+                total_kg, dados, periodo = extrair_dados_semana_anterior(page, h)
+                resultados.append({'hospital': h['name'], 'periodo': periodo, 'total': total_kg, 'dados': dados})
+            
+            gerar_relatorio(resultados)
+            enviar_email(config['email'])
+        except Exception as e:
+            print(f"[ERRO AGENDADO] {e}")
+        finally:
+            browser.close()
 
-    if not PLAYWRIGHT_AVAILABLE:
-        print("[AGENDADO] Playwright não disponível; verifique instalação e build (playwright install).")
-        return
-
-    try:
-        with sync_playwright() as p:
-            # Lança o navegador — se os executáveis não existirem, Playwright emitirá mensagem sugerindo 'playwright install'
-            browser = p.chromium.launch(headless=True)
-            page = browser.new_page()
-            try:
-                page.goto('https://sistemasaogeraldoservice.com.br/sistema/Login.aspx')
-                page.fill('#txtUsuario', config.get('username', USUARIO_DEFAULT))
-                page.fill('#txtSenha', config.get('password', SENHA_DEFAULT))
-                page.click('#Button1')
-                page.wait_for_load_state('networkidle')
-
-                resultados = []
-                for h in hospitals:
-                    total_kg, dados, periodo = extrair_dados_semana_anterior(page, h)
-                    resultados.append({'hospital': h.get('name', '---'), 'periodo': periodo, 'total': total_kg, 'dados': dados})
-
-                gerar_relatorio(resultados)
-                enviar_email(config.get('email'))
-            except Exception as e:
-                print(f"[ERRO AGENDADO] {e}\n{traceback.format_exc()}")
-            finally:
-                try:
-                    browser.close()
-                except Exception:
-                    pass
-    except Exception as e:
-        print(f"[AGENDADO] Falha inicializando Playwright: {e}\n{traceback.format_exc()}")
-
-# ========================= AGENDADOR =========================
+# ========================= AGENDADOR COM CRON RECORRENTE =========================
 scheduler = BackgroundScheduler()
 scheduler.start()
 atexit.register(lambda: scheduler.shutdown())
@@ -397,14 +218,13 @@ def reagendar():
             )
             print(f"[CRON] Agendado recorrente: toda {day_str} às {hour:02d}:{minute:02d}")
         except Exception as e:
-            print(f"[ERRO CRON] {e}\n{traceback.format_exc()}")
+            print(f"[ERRO CRON] {e}")
     else:
         try:
             dt = datetime.fromisoformat(horario.replace('Z', '+00:00') if 'Z' in horario else horario)
             if dt > datetime.now():
                 scheduler.add_job(executar_relatorio_agendado, 'date', run_date=dt, id='relatorio_unico')
-        except Exception as e:
-            print(f"[ERRO CRON DATE] {e}\n{traceback.format_exc()}")
+        except: pass
 
 # ========================= ROTAS =========================
 @app.route('/api/data', methods=['GET'])
@@ -438,7 +258,6 @@ def remove_hospital(index):
 @app.route('/api/run-stream', methods=['GET'])
 def run_stream():
     def event_msg(obj): return f"data: {json.dumps(obj, default=str)}\n\n"
-
     @stream_with_context
     def gen():
         total = len(hospitals)
@@ -447,108 +266,42 @@ def run_stream():
             yield event_msg({'type': 'error', 'error': 'Nenhum hospital cadastrado'})
             return
 
-        # garante browsers dir existe
-        try:
-            os.makedirs(BROWSERS_DIR, exist_ok=True)
-        except Exception as e:
-            print(f"[STREAM] Falha criando BROWSERS_DIR: {e}")
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            page = browser.new_page()
+            try:
+                page.goto('https://sistemasaogeraldoservice.com.br/sistema/Login.aspx')
+                page.fill('#txtUsuario', config.get('username', USUARIO_DEFAULT))
+                page.fill('#txtSenha', config.get('password', SENHA_DEFAULT))
+                page.click('#Button1')
+                page.wait_for_load_state('networkidle')
 
-        if not PLAYWRIGHT_AVAILABLE:
-            yield event_msg({'type': 'error', 'error': 'Playwright não instalado no ambiente. Execute playwright install no build.'})
-            return
+                resultados = []
+                for idx, h in enumerate(hospitals, start=1):
+                    yield event_msg({'type': 'progress', 'idx': idx, 'current': idx-1, 'total': total, 'hospital': h['name'], 'status': 'Extraindo...'})
+                    total_kg, dados, periodo = extrair_dados_semana_anterior(page, h)
+                    resultados.append({'hospital': h['name'], 'periodo': periodo, 'total': total_kg, 'dados': dados})
+                    yield event_msg({'type': 'progress', 'idx': idx, 'current': idx, 'total': total, 'hospital': h['name'], 'status': f'{total_kg:.2f} kg'})
 
-        try:
-            with sync_playwright() as p:
-                browser = p.chromium.launch(headless=True)
-                page = browser.new_page()
-                try:
-                    page.goto('https://sistemasaogeraldoservice.com.br/sistema/Login.aspx')
-                    page.fill('#txtUsuario', config.get('username', USUARIO_DEFAULT))
-                    page.fill('#txtSenha', config.get('password', SENHA_DEFAULT))
-                    page.click('#Button1')
-                    page.wait_for_load_state('networkidle')
+                gerar_relatorio(resultados)
+                enviar_email(config.get('email', ''))
 
-                    resultados = []
-                    for idx, h in enumerate(hospitals, start=1):
-                        yield event_msg({'type': 'progress', 'idx': idx, 'current': idx-1, 'total': total, 'hospital': h.get('name', ''), 'status': 'Extraindo...'})
-                        total_kg, dados, periodo = extrair_dados_semana_anterior(page, h)
-                        resultados.append({'hospital': h.get('name', ''), 'periodo': periodo, 'total': total_kg, 'dados': dados})
-                        yield event_msg({'type': 'progress', 'idx': idx, 'current': idx, 'total': total, 'hospital': h.get('name', ''), 'status': f'{total_kg:.2f} kg'})
+                # ENVIA O EXCEL PARA DOWNLOAD NO FRONTEND
+                with open(CAMINHO_RELATORIO, 'rb') as f:
+                    excel_b64 = base64.b64encode(f.read()).decode('utf-8')
+                    yield event_msg({
+                        'type': 'excel',
+                        'data': excel_b64,
+                        'filename': os.path.basename(CAMINHO_RELATORIO)
+                    })
 
-                    gerar_relatorio(resultados)
-                    enviar_email(config.get('email', ''))
-
-                    # ENVIA O EXCEL PARA DOWNLOAD NO FRONTEND
-                    try:
-                        with open(CAMINHO_RELATORIO, 'rb') as f:
-                            excel_b64 = base64.b64encode(f.read()).decode('utf-8')
-                            yield event_msg({'type': 'excel', 'data': excel_b64, 'filename': os.path.basename(CAMINHO_RELATORIO)})
-                    except Exception as e:
-                        yield event_msg({'type': 'warning', 'warning': f"Relatório não encontrado: {e}"})
-
-                    yield event_msg({'type': 'done', 'results': resultados})
-                except Exception as e:
-                    yield event_msg({'type': 'error', 'error': str(e)})
-                finally:
-                    try:
-                        browser.close()
-                    except:
-                        pass
-        except Exception as e:
-            yield event_msg({'type': 'error', 'error': f"Playwright failure: {e}"})
-
+                yield event_msg({'type': 'done', 'results': resultados})
+            except Exception as e:
+                yield event_msg({'type': 'error', 'error': str(e)})
+            finally:
+                browser.close()
     return Response(gen(), mimetype='text/event-stream')
 
-# ========================= BOOT quando rodar localmente com python app.py =========================
 if __name__ == '__main__':
-    # garante diretórios (se ainda não existirem)
-    try:
-        os.makedirs(DATA_DIR, exist_ok=True)
-        os.makedirs(BROWSERS_DIR, exist_ok=True)
-    except Exception as e:
-        print(f"[MAIN] Falha criando dirs no boot: {e}")
-
-    # cria arquivos default caso não existam (seguro)
-    try:
-        if not os.path.exists(CONFIG_FILE):
-            with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-                json.dump({}, f)
-        if not os.path.exists(HOSPITALS_FILE):
-            with open(HOSPITALS_FILE, "w", encoding="utf-8") as f:
-                json.dump([], f)
-    except Exception as e:
-        print(f"[MAIN] Falha ao criar arquivos default: {e}")
-
-    # recarrega dados (caso criados agora)
-    load_data()
-
-    # reagenda se necessário
     reagendar()
-
-    port = int(os.getenv('PORT', 5000))
-    app.run(host='0.0.0.0', port=port)
-
-# ========================= DICAS IMPORTANTES (copiar para Render) =========================
-#
-# No render.yaml (ou no painel), garanta:
-#
-# 1) Disk montado em /data:
-# disk:
-#   name: data
-#   mountPath: /data
-#
-# 2) buildCommand que instala browsers no /data/browsers:
-#   pip install -r requirements.txt
-#   mkdir -p /data/browsers
-#   PLAYWRIGHT_BROWSERS_PATH=/data/browsers playwright install chromium --with-deps
-#
-# 3) env var (opcional, mas útil) no painel:
-#   PLAYWRIGHT_BROWSERS_PATH = /data/browsers
-#
-# 4) startCommand:
-#   gunicorn app:app --worker-class sync --workers 1
-#
-# Essas três peças (disk mount + playwright install apontando para /data/browsers + startCommand) são
-# necessárias para garantir que Playwright encontre os binários do Chromium de forma persistente.
-#
-# FIM.
+    app.run(host='0.0.0.0', port=int(os.getenv('PORT', 5000)))
