@@ -1,4 +1,4 @@
-# app.py — VERSÃO FINAL CORRIGIDA (GLOBAL NO TOPO, EXTRAÇÃO 1X, DISCO PERSISTENTE)
+# app.py — VERSÃO FINAL COM AGENDAMENTO RECORRENTE (CRON)
 from flask import Flask, request, jsonify, Response, stream_with_context
 from flask_cors import CORS
 import os
@@ -22,7 +22,6 @@ from email import encoders
 from bs4 import BeautifulSoup
 import time
 import json
-import traceback
 from urllib.parse import urlparse, parse_qs
 from apscheduler.schedulers.background import BackgroundScheduler
 import atexit
@@ -143,7 +142,7 @@ def extrair_dados_semana_anterior(driver, hospital):
 
 # === RELATÓRIO (GLOBAL CORRIGIDO) ===
 def gerar_relatorio(resultados):
-    global CAMINHO_RELATORIO  # ← GLOBAL NO TOPO DA FUNÇÃO
+    global CAMINHO_RELATORIO
     df = pd.DataFrame([{'Hospital': r['hospital'], 'Período': r['periodo'], 'Total (Kg)': r['total']} for r in resultados])
     try:
         df.to_excel(CAMINHO_RELATORIO, index=False)
@@ -215,10 +214,33 @@ scheduler = BackgroundScheduler()
 scheduler.start()
 atexit.register(lambda: scheduler.shutdown())
 
+# === REAGENDAR COM SUPORTE A CRON RECORRENTE ===
 def reagendar():
     scheduler.remove_all_jobs()
     horario = config.get('schedule')
-    if horario:
+    if not horario:
+        return
+
+    if horario.startswith('cron['):
+        # Formato: cron[2 13:00] → terça-feira às 13h
+        try:
+            params = horario[5:-1].strip()  # "2 13:00"
+            day_of_week, time_str = params.split(' ', 1)
+            hour, minute = map(int, time_str.split(':'))
+            
+            scheduler.add_job(
+                executar_relatorio_agendado,
+                'cron',
+                day_of_week=day_of_week,
+                hour=hour,
+                minute=minute,
+                id='relatorio_semanal_recorrente'
+            )
+            print(f"[AGENDADO RECORRENTE] Todas as {day_of_week} às {hour:02d}:{minute:02d}")
+        except Exception as e:
+            print(f"[ERRO CRON] {e}")
+    else:
+        # Formato antigo: data única (fallback)
         try:
             dt = datetime.fromisoformat(horario.replace('Z', '+00:00') if 'Z' in horario else horario)
             if dt > datetime.now():
@@ -229,7 +251,7 @@ def reagendar():
                     id='relatorio_semanal'
                 )
         except Exception as e:
-            print(f"[ERRO AGENDAMENTO] {e}")
+            print(f"[ERRO AGENDAMENTO ÚNICO] {e}")
 
 # === ROTAS ===
 @app.route('/api/data', methods=['GET'])
