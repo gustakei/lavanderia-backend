@@ -7,9 +7,13 @@ services:
     buildCommand: |
       pip install -r requirements.txt
       playwright install-deps
-      playwright install
-    startCommand: gunicorn app:app --worker-class sync --workers 1
+      playwright install chromium
+      python -c "import playwright; print('Playwright instalado com sucesso')"
+    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --worker-class sync --timeout 120
     disk:
       name: data
       mountPath: /data
       sizeGB: 1
+    envVars:
+      - key: PLAYWRIGHT_BROWSERS_PATH
+        value: 0
