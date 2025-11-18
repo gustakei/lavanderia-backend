@@ -1,4 +1,4 @@
-# app.py — VERSÃO DEFINITIVA PARA SISTEMA SÃO GERALDO
+# app.py — VERSÃO FINAL CORRIGIDA
 from flask import Flask, request, jsonify, Response, stream_with_context
 from flask_cors import CORS
 import os
@@ -101,14 +101,11 @@ def criar_sessao():
 
 def fazer_login(session):
     try:
-        # URL de login do sistema São Geraldo
         login_url = "https://sistemasaogeraldoservice.com.br/sistema/Login.aspx"
         
-        # Primeiro, acessar a página de login para obter os campos hidden
         response = session.get(login_url)
         soup = BeautifulSoup(response.content, 'html.parser')
         
-        # Extrair campos hidden necessários para o ASP.NET
         viewstate = soup.find('input', {'name': '__VIEWSTATE'})
         viewstate = viewstate['value'] if viewstate else ''
         
@@ -118,7 +115,6 @@ def fazer_login(session):
         eventvalidation = soup.find('input', {'name': '__EVENTVALIDATION'})
         eventvalidation = eventvalidation['value'] if eventvalidation else ''
         
-        # Dados do formulário de login
         login_data = {
             '__VIEWSTATE': viewstate,
             '__VIEWSTATEGENERATOR': viewstategenerator,
@@ -128,124 +124,81 @@ def fazer_login(session):
             'Button1': 'Acessar'
         }
         
-        # Fazer login
         response = session.post(login_url, data=login_data, allow_redirects=True)
         
-        # Verificar se o login foi bem-sucedido
-        # Se redirecionou para Default.aspx, provavelmente deu certo
-        if 'Default.aspx' in response.url or response.status_code == 200:
-            logger.info("Login realizado com sucesso")
+        # Verificar se realmente está logado
+        if 'Default.aspx' in response.url:
+            logger.info("✅ Login realizado com sucesso - redirecionado para Default.aspx")
             return True
         else:
-            logger.error("Falha no login - possíveis credenciais incorretas")
+            logger.error(f"❌ Falha no login - URL após login: {response.url}")
             return False
             
     except Exception as e:
         logger.error(f"Erro durante o login: {e}")
         return False
 
-# ========================= EXTRAÇÃO DE DADOS OTIMIZADA =========================
+# ========================= EXTRAÇÃO DE DADOS (MESMA LÓGICA DO CÓDIGO ANTIGO) =========================
 def extrair_dados_semana_anterior(session, hospital):
-    try:
-        inicio, fim = calcular_semana_anterior()
-        periodo_text = f"{inicio.strftime('%d/%m/%Y')} a {fim.strftime('%d/%m/%Y')}"
+    inicio, fim = calcular_semana_anterior()
+    periodo_text = f"{inicio.strftime('%d/%m/%Y')} a {fim.strftime('%d/%m/%Y')}"
 
-        # Extrair cliente_id da URL do hospital
-        parsed = urlparse(hospital['url'])
-        params = parse_qs(parsed.query)
-        cliente_id = params.get('cliente', [None])[0]
-        
-        if not cliente_id:
-            logger.warning(f"Cliente ID não encontrado para {hospital['name']}")
-            return 0.0, [], periodo_text
-
-        base_url = "https://sistemasaogeraldoservice.com.br/sistema/ListagemLavanderia.aspx"
-        dados_por_mes = {}
-        
-        # Agrupar dias por mês/ano para otimizar as requisições
-        current = inicio
-        while current <= fim:
-            mes_ano = current.strftime("%m/%Y")
-            dia_str = current.strftime("%d/%m/%Y")
-            dados_por_mes.setdefault(mes_ano, []).append(dia_str)
-            current += timedelta(days=1)
-
-        total_kg = 0.0
-        todos_dados = []
-
-        for mes_ano, dias in dados_por_mes.items():
-            url = f"{base_url}?cliente={cliente_id}&periodo={mes_ano}"
-            logger.info(f"Acessando: {url}")
-            
-            response = session.get(url)
-            if response.status_code != 200:
-                logger.warning(f"Falha ao acessar página para {mes_ano}")
-                continue
-
-            soup = BeautifulSoup(response.content, 'html.parser')
-            
-            # ENCONTRAR A TABELA CORRETA - ESTRATÉGIA ROBUSTA
-            tabela = None
-            
-            # Tentar pelo ID primeiro
-            tabela = soup.find('table', id='tabpedidos')
-            
-            # Se não encontrou, buscar por classe
-            if not tabela:
-                tabela = soup.find('table', class_='tabpedidos')
-            
-            # Se ainda não encontrou, buscar qualquer tabela que tenha a estrutura correta
-            if not tabela:
-                for table in soup.find_all('table'):
-                    headers = table.find_all('th')
-                    for header in headers:
-                        if 'DIA' in header.get_text().upper():
-                            tabela = table
-                            break
-                    if tabela:
-                        break
-
-            if not tabela:
-                logger.warning(f"Tabela não encontrada para {hospital['name']} - {mes_ano}")
-                continue
-
-            # EXTRAIR DADOS DA TABELA
-            for linha in tabela.find_all('tr')[1:]:  # Pular cabeçalho
-                cols = linha.find_all('td')
-                if len(cols) < 2: 
-                    continue
-                    
-                data_str = cols[0].get_text(strip=True)
-                
-                # Verificar se esta data está no período que nos interessa
-                if data_str not in dias: 
-                    continue
-                
-                # Extrair valor de kg - segunda coluna (índice 1)
-                kg_text = cols[1].get_text(strip=True)
-                
-                # Limpar e converter o texto para float
-                kg_text = kg_text.replace('.', '').replace(' ', '').replace(',', '.')
-                try: 
-                    kg = float(kg_text)
-                except ValueError: 
-                    kg = 0.0
-                    logger.warning(f"Valor inválido para {data_str}: {kg_text}")
-                
-                todos_dados.append({'data': data_str, 'kg': kg})
-                total_kg += kg
-
-        logger.info(f"Extraídos {total_kg:.2f} kg para {hospital['name']} - {periodo_text}")
-        return total_kg, todos_dados, periodo_text
-        
-    except Exception as e:
-        logger.error(f"Erro na extração para {hospital['name']}: {e}")
+    parsed = urlparse(hospital['url'])
+    params = parse_qs(parsed.query)
+    cliente_id = params.get('cliente', [None])[0]
+    if not cliente_id:
         return 0.0, [], periodo_text
 
-# ========================= RELATÓRIO EXCEL =========================
+    base_url = "https://sistemasaogeraldoservice.com.br/sistema/ListagemLavanderia.aspx"
+    dados_por_mes = {}
+    current = inicio
+    while current <= fim:
+        mes_ano = current.strftime("%m/%Y")
+        dia_str = current.strftime("%d/%m/%Y")
+        dados_por_mes.setdefault(mes_ano, []).append(dia_str)
+        current += timedelta(days=1)
+
+    total_kg = 0.0
+    todos_dados = []
+
+    for mes_ano, dias in dados_por_mes.items():
+        # REQUESTS em vez de Playwright - RESTO É IGUAL
+        url = f"{base_url}?cliente={cliente_id}&periodo={mes_ano}"
+        response = session.get(url)
+        
+        soup = BeautifulSoup(response.content, 'html.parser')
+        
+        # MESMA LÓGICA DE EXTRAÇÃO DA TABELA
+        tabela = soup.find('table', id='tabpedidos')
+        if not tabela:
+            for t in soup.find_all('table'):
+                if t.find('th') and 'DIA' in t.get_text(strip=True).upper():
+                    tabela = t
+                    break
+        if not tabela:
+            continue
+
+        # MESMA LÓGICA DE EXTRAÇÃO DAS LINHAS
+        for linha in tabela.find_all('tr')[1:]:
+            cols = linha.find_all('td')
+            if len(cols) < 2: continue
+            data_str = cols[0].get_text(strip=True)
+            if data_str not in dias: continue
+            kg_text = cols[1].get_text(strip=True).replace('.', '').replace(' ', '').replace(',', '.')
+            try: 
+                kg = float(kg_text)
+            except: 
+                kg = 0.0
+            todos_dados.append({'data': data_str, 'kg': kg})
+            total_kg += kg
+
+    logger.info(f"Extraídos {total_kg:.2f} kg para {hospital['name']} - {periodo_text}")
+    return total_kg, todos_dados, periodo_text
+
+# ========================= RELATÓRIO EXCEL (SEM PANDAS) =========================
 def gerar_relatorio(resultados):
     try:
-        # Criar workbook manualmente (sem pandas)
+        # Criar workbook manualmente
         wb = openpyxl.Workbook()
         ws = wb.active
         ws.title = "Relatório Lavanderia"
@@ -303,13 +256,11 @@ def enviar_email(destinatario):
             logger.warning("Destinatário não configurado")
             return False
 
-        # Criar mensagem
         msg = MIMEMultipart()
         msg['From'] = email
         msg['To'] = destinatario
         msg['Subject'] = f"Relatório Lavanderia - {datetime.now().strftime('%d/%m/%Y')}"
 
-        # Corpo do email
         corpo = f"""
         Prezado(a),
         
@@ -322,7 +273,6 @@ def enviar_email(destinatario):
         """
         msg.attach(MIMEText(corpo, 'plain'))
 
-        # Anexar arquivo
         with open(RELATORIO_PATH, "rb") as f:
             part = MIMEBase('application', 'octet-stream')
             part.set_payload(f.read())
@@ -330,7 +280,6 @@ def enviar_email(destinatario):
             part.add_header('Content-Disposition', f'attachment; filename="RelatorioLavanderia.xlsx"')
             msg.attach(part)
 
-        # Enviar email
         server = smtplib.SMTP('smtp.gmail.com', 587)
         server.starttls()
         server.login(email, senha)
@@ -528,7 +477,6 @@ def run_stream():
                 yield event({'type': 'progress', 'status': 'Enviando email...'})
                 enviar_email(config['email'])
 
-            # Enviar Excel para frontend
             with open(RELATORIO_PATH, 'rb') as f:
                 b64 = base64.b64encode(f.read()).decode()
                 yield event({
@@ -563,9 +511,32 @@ def test_system():
     except Exception as e:
         return jsonify({'status': 'error', 'error': str(e)}), 500
 
+# Rota para teste manual da extração
+@app.route('/api/test-extraction')
+def test_extraction():
+    """Teste manual da extração"""
+    try:
+        session = criar_sessao()
+        if not fazer_login(session):
+            return jsonify({'error': 'Falha no login'})
+        
+        # Teste com um hospital específico
+        hospital_test = {'name': 'HUPE', 'url': 'https://sistemasaogeraldoservice.com.br/sistema/ListagemLavanderia.aspx?cliente=10113&periodo=11/2025'}
+        
+        kg, dados, periodo = extrair_dados_semana_anterior(session, hospital_test)
+        
+        return jsonify({
+            'success': True,
+            'hospital': hospital_test['name'],
+            'total_kg': kg,
+            'periodo': periodo,
+            'dados': dados
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)})
+
 if __name__ == '__main__':
     logger.info("Iniciando aplicação Flask...")
     reagendar()
     port = int(os.getenv('PORT', 5000))
     app.run(host='0.0.0.0', port=port, debug=False)
-
