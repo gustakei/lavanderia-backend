@@ -9,7 +9,6 @@ from datetime import datetime, timedelta
 from urllib.parse import urlparse, parse_qs
 import requests
 from bs4 import BeautifulSoup
-import pandas as pd
 import openpyxl
 from openpyxl.styles import Font, PatternFill
 from openpyxl.chart import BarChart, Reference
@@ -246,31 +245,33 @@ def extrair_dados_semana_anterior(session, hospital):
 # ========================= RELATÓRIO EXCEL =========================
 def gerar_relatorio(resultados):
     try:
-        # Criar DataFrame com resultados
-        df = pd.DataFrame([{
-            'Hospital': r['hospital'],
-            'Período': r['periodo'],
-            'Total (Kg)': r['total']
-        } for r in resultados])
-
-        # Salvar Excel
-        df.to_excel(RELATORIO_PATH, index=False)
-
-        # Aplicar formatação
-        wb = openpyxl.load_workbook(RELATORIO_PATH)
+        # Criar workbook manualmente (sem pandas)
+        wb = openpyxl.Workbook()
         ws = wb.active
-
+        ws.title = "Relatório Lavanderia"
+        
+        # Cabeçalhos
+        ws.append(['Hospital', 'Período', 'Total (Kg)'])
+        
         # Formatar cabeçalho
         for cell in ws[1]:
             cell.font = Font(bold=True)
             cell.fill = PatternFill(start_color='CCCCCC', end_color='CCCCCC', fill_type='solid')
-
-        # Adicionar total geral
+        
+        # Adicionar dados
+        for resultado in resultados:
+            ws.append([
+                resultado['hospital'],
+                resultado['periodo'], 
+                resultado['total']
+            ])
+        
+        # Total geral
         total_geral = sum(r['total'] for r in resultados)
         ws.append(['', 'Total Geral', total_geral])
         ws.cell(row=ws.max_row, column=3).font = Font(bold=True)
-
-        # Adicionar gráfico se houver múltiplos hospitais
+        
+        # Gráfico
         if len(resultados) > 1:
             chart = BarChart()
             data = Reference(ws, min_col=3, min_row=1, max_row=ws.max_row-1)
@@ -280,7 +281,7 @@ def gerar_relatorio(resultados):
             chart.title = "Totais por Hospital"
             chart.style = 13
             ws.add_chart(chart, "E2")
-
+        
         wb.save(RELATORIO_PATH)
         logger.info(f"Relatório gerado: {RELATORIO_PATH}")
         
@@ -567,3 +568,4 @@ if __name__ == '__main__':
     reagendar()
     port = int(os.getenv('PORT', 5000))
     app.run(host='0.0.0.0', port=port, debug=False)
+
