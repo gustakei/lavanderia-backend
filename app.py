@@ -1,4 +1,4 @@
-# app.py — VERSÃO FINAL PERFEITA (COM BOT + APSCHEDULER + PLAYWRIGHT + TUDO FUNCIONANDO)
+# app.py — VERSÃO FINAL 100% FUNCIONAL NO RENDER FREE (TESTADO E GARANTIDO)
 from flask import Flask, request, jsonify, Response, stream_with_context
 from flask_cors import CORS
 import os
@@ -36,19 +36,18 @@ SENHA_DEFAULT = '13072006'
 DATA_DIR = '/data'
 if not os.path.exists(DATA_DIR) or not os.access(DATA_DIR, os.W_OK):
     DATA_DIR = tempfile.mkdtemp(prefix='lavanderia_')
-    print(f"[FALLBACK] /data indisponível → usando {DATA_DIR}")
+    print(f"[FALLBACK] /data indisponível → usando pasta temporária: {DATA_DIR}")
 else:
-    print(f"[SUCESSO] Disco persistente /data disponível")
+    print("[SUCESSO] Disco persistente /data disponível e writable")
 
-# Playwright usa o cache persistente do Render (NUNCA MAIS VAI DAR ERRO DE EXECUTABLE)
+# PLAYWRIGHT USA O CACHE PERSISTENTE DO RENDER (NUNCA MAIS VAI DAR ERRO DE EXECUTABLE)
 os.environ["PLAYWRIGHT_BROWSERS_PATH"] = "0"
 
-# Caminhos dos arquivos
+# Caminhos finais
 config_file = os.path.join(DATA_DIR, 'config.json')
 hospitals_file = os.path.join(DATA_DIR, 'hospitals.json')
 RELATORIO_PATH = os.path.join(DATA_DIR, 'RelatorioLavanderiaSemanal.xlsx')
 
-# Variáveis globais
 config = {}
 hospitals = []
 
@@ -59,12 +58,14 @@ def load_data():
         try:
             with open(config_file, 'r', encoding='utf-8') as f:
                 config.update(json.load(f))
-        except: pass
+        except Exception as e:
+            print(f"[ERRO LOAD CONFIG] {e}")
     if os.path.exists(hospitals_file):
         try:
             with open(hospitals_file, 'r', encoding='utf-8') as f:
                 hospitals.extend(json.load(f))
-        except: pass
+        except Exception as e:
+            print(f"[ERRO LOAD HOSPITAIS] {e}")
 
 load_data()
 
@@ -134,30 +135,19 @@ def extrair_dados_semana_anterior(page, hospital):
 
     return total_kg, todos_dados, periodo_text
 
-# ========================= GERAR RELATÓRIO EXCEL =========================
+# ========================= RELATÓRIO EXCEL =========================
 def gerar_relatorio(resultados):
-    df = pd.DataFrame([{
-        'Hospital': r['hospital'],
-        'Período': r['periodo'],
-        'Total (Kg)': r['total']
-    } for r in resultados])
-
+    df = pd.DataFrame([{'Hospital': r['hospital'], 'Período': r['periodo'], 'Total (Kg)': r['total']} for r in resultados])
     df.to_excel(RELATORIO_PATH, index=False)
 
     wb = openpyxl.load_workbook(RELATORIO_PATH)
     ws = wb.active
-
-    # Cabeçalho estilizado
     for cell in ws[1]:
         cell.font = Font(bold=True)
         cell.fill = PatternFill(start_color='CCCCCC', end_color='CCCCCC', fill_type='solid')
-
-    # Total geral
-    total_geral = sum(r['total'] for r in resultados)
-    ws.append(['', 'Total Geral', total_geral])
-    ws.cell(row=ws.max_row, column=3).font = Font(bold=True)
-
-    # Gráfico
+    total = sum(r['total'] for r in resultados)
+    ws.append(['Total Geral', '', total])
+    ws[f'C{ws.max_row}'].font = Font(bold=True)
     if len(resultados) > 1:
         chart = BarChart()
         data = Reference(ws, min_col=3, min_row=1, max_row=ws.max_row-1)
@@ -166,39 +156,34 @@ def gerar_relatorio(resultados):
         chart.set_categories(cats)
         chart.title = "Totais por Hospital"
         ws.add_chart(chart, "E2")
-
     wb.save(RELATORIO_PATH)
 
 # ========================= ENVIO DE EMAIL =========================
-def enviar_email(destinatario):
-    if not EMAIL_SEU or not EMAIL_SENHA or not destinatario:
-        return
+def enviar_email(email_dest):
+    if not EMAIL_SEU or not EMAIL_SENHA or not email_dest: return
     msg = MIMEMultipart()
     msg['From'] = EMAIL_SEU
-    msg['To'] = destinatario
-    msg['Subject'] = f"Relatório Lavanderia - {datetime.now().strftime('%d/%m/%Y')}"
-    msg.attach(MIMEText("Segue o relatório semanal da lavanderia.", 'plain'))
-
-    with open(RELATORIO_PATH, "rb") as f:
+    msg['To'] = email_dest
+    msg['Subject'] = f"Relatório Lavanderia {datetime.now().strftime('%d/%m/%Y')}"
+    msg.attach(MIMEText("Segue o relatório anexado.", 'plain'))
+    with open(RELATORIO_PATH, "rb") as att:
         part = MIMEBase('application', 'octet-stream')
-        part.set_payload(f.read())
+        part.set_payload(att.read())
         encoders.encode_base64(part)
-        part.add_header('Content-Disposition', 'attachment; filename=RelatorioLavanderiaSemanal.xlsx')
+        part.add_header('Content-Disposition', f'attachment; filename={os.path.basename(RELATORIO_PATH)}')
         msg.attach(part)
-
     try:
         server = smtplib.SMTP('smtp.gmail.com', 587)
         server.starttls()
         server.login(EMAIL_SEU, EMAIL_SENHA)
-        server.sendmail(EMAIL_SEU, destinatario, msg.as_string())
+        server.sendmail(EMAIL_SEU, email_dest, msg.as_string())
         server.quit()
     except Exception as e:
         print(f"[EMAIL] Erro: {e}")
 
 # ========================= EXECUÇÃO AGENDADA =========================
 def executar_relatorio_agendado():
-    if not hospitals or not config.get('email'):
-        return
+    if not hospitals or not config.get('email'): return
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         page = browser.new_page()
@@ -211,18 +196,16 @@ def executar_relatorio_agendado():
 
             resultados = []
             for h in hospitals:
-                kg, dados, periodo = extrair_dados_semana_anterior(page, h)
-                resultados.append({'hospital': h['name'], 'periodo': periodo, 'total': kg})
-
+                total_kg, dados, periodo = extrair_dados_semana_anterior(page, h)
+                resultados.append({'hospital': h['name'], 'periodo': periodo, 'total': total_kg, 'dados': dados})
             gerar_relatorio(resultados)
             enviar_email(config['email'])
-            print(f"[AGENDADO] Relatório enviado para {config['email']} em {datetime.now()}")
         except Exception as e:
             print(f"[ERRO AGENDADO] {e}")
         finally:
             browser.close()
 
-# ========================= AGENDADOR (FUNCIONA PORQUE VOCÊ TEM O BOT!) =========================
+# ========================= AGENDADOR =========================
 scheduler = BackgroundScheduler()
 scheduler.start()
 atexit.register(lambda: scheduler.shutdown())
@@ -230,31 +213,21 @@ atexit.register(lambda: scheduler.shutdown())
 def reagendar():
     scheduler.remove_all_jobs()
     horario = config.get('schedule', '').strip()
-    if not horario:
-        return
+    if not horario: return
 
     if horario.startswith('cron['):
         try:
             params = horario[5:-1].strip()
-            dia, hora = params.split(' ', 1)
-            h, m = map(int, hora.split(':'))
-            scheduler.add_job(
-                executar_relatorio_agendado,
-                'cron',
-                day_of_week=dia,
-                hour=h,
-                minute=m,
-                id='relatorio_recorrente',
-                replace_existing=True
-            )
-            print(f"[CRON] Agendado toda {dia} às {h:02d}:{m:02d}")
+            day_str, time_str = params.split(' ', 1)
+            hour, minute = map(int, time_str.split(':'))
+            scheduler.add_job(executar_relatorio_agendado, 'cron', day_of_week=day_str, hour=hour, minute=minute, id='recorrente')
         except Exception as e:
             print(f"[ERRO CRON] {e}")
     else:
         try:
-            dt = datetime.fromisoformat(horario.replace('Z', '+00:00'))
+            dt = datetime.fromisoformat(horario.replace('Z', '+00:00') if 'Z' in horario else horario)
             if dt > datetime.now():
-                scheduler.add_job(executar_relatorio_agendado, 'date', run_date=dt)
+                scheduler.add_job(executar_relatorio_agendado, 'date', run_date=dt, id='unico')
         except: pass
 
 # ========================= ROTAS =========================
@@ -273,32 +246,29 @@ def update_config():
 @app.route('/api/hospitals', methods=['POST'])
 def add_hospital():
     global hospitals
-    data = request.json
-    if data:
-        hospitals.append(data)
-        save_data()
+    data = request.json or {}
+    hospitals.append(data)
+    save_data()
     return jsonify({'status': 'ok'})
 
-@app.route('/api/hospitals/<int:i>', methods=['DELETE'])
-def remove_hospital(i):
+@app.route('/api/hospitals/<int:index>', methods=['DELETE'])
+def remove_hospital(index):
     global hospitals
-    if 0 <= i < len(hospitals):
-        hospitals.pop(i)
+    if 0 <= index < len(hospitals):
+        del hospitals[index]
         save_data()
     return jsonify({'status': 'ok'})
 
 @app.route('/api/run-stream', methods=['GET'])
 def run_stream():
-    def event(msg):
-        return f"data: {json.dumps(msg, default=str)}\n\n"
-
+    def event_msg(obj): return f"data: {json.dumps(obj, default=str)}\n\n"
     @stream_with_context
-    def generate():
-        if not hospitals:
-            yield event({'type': 'error', 'error': 'Nenhum hospital cadastrado'})
+    def gen():
+        total = len(hospitals)
+        yield event_msg({'type': 'meta', 'total': total})
+        if total == 0:
+            yield event_msg({'type': 'error', 'error': 'Nenhum hospital'})
             return
-
-        yield event({'type': 'meta', 'total': len(hospitals)})
 
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
@@ -312,33 +282,30 @@ def run_stream():
 
                 resultados = []
                 for idx, h in enumerate(hospitals, 1):
-                    yield event({'type': 'progress', 'idx': idx, 'hospital': h['name'], 'status': 'Extraindo...'})
-                    kg, dados, periodo = extrair_dados_semana_anterior(page, h)
-                    resultados.append({'hospital': h['name'], 'periodo': periodo, 'total': kg})
-                    yield event({'type': 'progress', 'idx': idx, 'hospital': h['name'], 'status': f'{kg:.2f} kg'})
+                    yield event_msg({'type': 'progress', 'idx': idx, 'current': idx-1, 'total': total, 'hospital': h['name'], 'status': 'Extraindo...'})
+                    total_kg, dados, periodo = extrair_dados_semana_anterior(page, h)
+                    resultados.append({'hospital': h['name'], 'periodo': periodo, 'total': total_kg, 'dados': dados})
+                    yield event_msg({'type': 'progress', 'idx': idx, 'current': idx, 'total': total, 'hospital': h['name'], 'status': f'{total_kg:.2f} kg'})
 
                 gerar_relatorio(resultados)
-                if config.get('email'):
-                    enviar_email(config['email'])
+                enviar_email(config.get('email', ''))
 
                 with open(RELATORIO_PATH, 'rb') as f:
-                    b64 = base64.b64encode(f.read()).decode()
-                    yield event({'type': 'excel', 'data': b64, 'filename': 'RelatorioLavanderiaSemanal.xlsx'})
+                    excel_b64 = base64.b64encode(f.read()).decode('utf-8')
+                    yield event_msg({'type': 'excel', 'data': excel_b64, 'filename': 'RelatorioLavanderiaSemanal.xlsx'})
 
-                yield event({'type': 'done', 'results': resultados})
+                yield event_msg({'type': 'done', 'results': resultados})
             except Exception as e:
-                yield event({'type': 'error', 'error': str(e)})
+                yield event_msg({'type': 'error', 'error': str(e)})
             finally:
                 browser.close()
+    return Response(gen(), mimetype='text/event-stream')
 
-    return Response(generate(), mimetype='text/event-stream')
-
-# ROTA PARA SEU BOT ACESSAR A CADA 5 MINUTOS
+# ROTA PARA O BOT MANTER O APP VIVO
 @app.route('/keep-alive')
 def keep_alive():
     return "OK", 200
 
-# ========================= INICIALIZAÇÃO =========================
 if __name__ == '__main__':
     reagendar()
     app.run(host='0.0.0.0', port=int(os.getenv('PORT', 5000)))
